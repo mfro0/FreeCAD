@@ -1,4 +1,4 @@
-/***************************************************************************
+﻿/***************************************************************************
  *   Copyright (c) 2015 Victor Titov (DeepSOIC) <vv.titov@gmail.com>       *
  *                                                                         *
  *   This file is part of the FreeCAD CAx development system.              *
@@ -1334,7 +1334,7 @@ Base::Placement AttachEngine3D::calculateAttachedPlacement(const Base::Placement
             } else if (mmode == mmNormalToPath){//mmNormalToPath
                 //align sketch origin to the origin of support
                 SketchNormal = gp_Dir(d.Reversed());//sketch normal looks at user. It is natural to have the curve directed away from user, so reversed.
-        }  else if (shapes[0]->ShapeType() == TopAbs_EDGE) {
+        }  else if (shapes[0]->ShapeType() == TopAbs_WIRE) {
 
                 const TopoDS_Wire &path = TopoDS::Wire(*(shapes[0]));
                 if (path.IsNull())
