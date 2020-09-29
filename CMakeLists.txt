@@ -1,6 +1,9 @@
 # april 2020, the oldest we have to support : Ununtu 16.04 LTS (Xenial)
 cmake_minimum_required(VERSION 3.5.1 FATAL_ERROR)
 
+set(BUILD_QT5 "ON")
+set(PYTHON_EXECUTABLE /usr/bin/python3)
+
 # policy CMP0072 was introduced with CMake 3.11
 # relates to FindOpenGL module
 # and cache variables OPENGL_gl_LIBRARY, OPENGL_glu_LIBRARY
