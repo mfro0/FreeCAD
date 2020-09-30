@@ -182,11 +182,11 @@ void AttachExtension::extensionOnChanged(const App::Property* prop)
                 bAttached = positionBySupport();
             } catch (Base::Exception &e) {
                 getExtendedObject()->setStatus(App::Error, true);
-                Base::Console().Error("PositionBySupport: %s\n",e.what());
+                Base::Console().Error("PositionBySupport: Base::Exception: %s\n",e.what());
                 //set error message - how?
             } catch (Standard_Failure &e){
                 getExtendedObject()->setStatus(App::Error, true);
-                Base::Console().Error("PositionBySupport: %s\n",e.GetMessageString());
+                Base::Console().Error("PositionBySupport: StandardFailure %s\n",e.GetMessageString());
             }
 
             // Hide properties when not applicable to reduce user confusion
@@ -280,7 +280,7 @@ App::PropertyPlacement& AttachExtension::getPlacement() const {
 }
 
 PyObject* AttachExtension::getExtensionPyObject(void) {
-    
+
     if (ExtensionPythonObject.is(Py::_None())){
         // ref counter is set to 1
         ExtensionPythonObject = Py::Object(new AttachExtensionPy(this),true);

@@ -905,6 +905,9 @@ AttachEngine3D::AttachEngine3D()
 
     //---------Edge-driven
 
+    s=cat(rtWire);
+    modeRefTypes[mmNormalToPath].push_back(s);
+
     s=cat(rtEdge);
     modeRefTypes[mmNormalToPath].push_back(s);
 
@@ -1227,8 +1230,9 @@ Base::Placement AttachEngine3D::calculateAttachedPlacement(const Base::Placement
             bThruVertex = true;
         }
 
-        if (shapes[0]->ShapeType() == TopAbs_EDGE) {
+        if (shapes[0]->ShapeType() != TopAbs_WIRE) {
 
+            Base::Console().Warning("ShapeType() = %d\n", shapes[0]->ShapeType());
             const TopoDS_Edge &path = TopoDS::Edge(*(shapes[0]));
             if (path.IsNull())
                 throw Base::ValueError("Null path in AttachEngine3D::calculateAttachedPlacement()!");
@@ -1334,115 +1338,115 @@ Base::Placement AttachEngine3D::calculateAttachedPlacement(const Base::Placement
             } else if (mmode == mmNormalToPath){//mmNormalToPath
                 //align sketch origin to the origin of support
                 SketchNormal = gp_Dir(d.Reversed());//sketch normal looks at user. It is natural to have the curve directed away from user, so reversed.
-        }  else if (shapes[0]->ShapeType() == TopAbs_WIRE) {
+            }
+        } else if (shapes[0]->ShapeType() == TopAbs_WIRE) {
 
-                const TopoDS_Wire &path = TopoDS::Wire(*(shapes[0]));
-                if (path.IsNull())
-                    throw Base::ValueError("Null path in AttachEngine3D::calculateAttachedPlacement()!");
+            const TopoDS_Wire &path = TopoDS::Wire(*(shapes[0]));
+            if (path.IsNull())
+                throw Base::ValueError("Null path in AttachEngine3D::calculateAttachedPlacement()!");
 
-                BRepAdaptor_CompCurve adapt(path);
+            BRepAdaptor_CompCurve adapt(path);
 
-                double u = 0.0;
-                double u1 = adapt.FirstParameter();
-                double u2 = adapt.LastParameter();
-                if(Precision::IsInfinite(u1) || Precision::IsInfinite(u2)){
-                    //prevent attachment to infinities in case of infinite shape.
-                    //example of an infinite shape is a datum line.
-                    u1 = 0.0;
-                    u2 = 1.0;
+            double u = 0.0;
+            double u1 = adapt.FirstParameter();
+            double u2 = adapt.LastParameter();
+            if(Precision::IsInfinite(u1) || Precision::IsInfinite(u2)){
+                //prevent attachment to infinities in case of infinite shape.
+                //example of an infinite shape is a datum line.
+                u1 = 0.0;
+                u2 = 1.0;
+            }
+
+            //if a point is specified, use the point as a point of mapping, otherwise use parameter value from properties
+            gp_Pnt p_in;
+            if (shapes.size() >= 2) {
+                TopoDS_Vertex vertex = TopoDS::Vertex(*(shapes[1]));
+                if (vertex.IsNull())
+                    throw Base::ValueError("Null vertex in AttachEngine3D::calculateAttachedPlacement()!");
+                p_in = BRep_Tool::Pnt(vertex);
+
+                // FIXME: need to iterate through the curves of the Wire here instead
+                // Handle (Geom_Curve) hCurve = BRep_Tool::Curve(path, u1, u2);
+
+                // GeomAPI_ProjectPointOnCurve projector (p_in, hCurve);
+                // u = projector.LowerDistanceParameter();
+            } else {
+                u = u1  +  this->attachParameter * (u2 - u1);
+            }
+            gp_Pnt p;  gp_Vec d; //point and derivative
+            adapt.D1(u,p,d);
+
+            if (d.Magnitude()<Precision::Confusion())
+                throw Base::ValueError("AttachEngine3D::calculateAttachedPlacement: path curve derivative is below 1e-7, too low, can't align");
+
+            //Set origin. Note that it will be overridden later for mmConcentric and mmRevolutionSection
+            if (bThruVertex) {
+                SketchBasePoint = p_in;
+            } else {
+                SketchBasePoint = p;
+            }
+
+            if (mmode == mmRevolutionSection
+                    || mmode == mmConcentric
+                    || mmode == mmFrenetNB
+                    || mmode == mmFrenetTN
+                    || mmode == mmFrenetTB){
+                gp_Vec dd;//second derivative
+                try{
+                    adapt.D2(u,p,d,dd);
+                } catch (Standard_Failure &e){
+                    //ignore. This is brobably due to insufficient continuity.
+                    dd = gp_Vec(0., 0., 0.);
+                    Base::Console().Warning("AttachEngine3D::calculateAttachedPlacement: can't calculate second derivative of curve. OCC error: %s\n", e.GetMessageString());
                 }
 
-                //if a point is specified, use the point as a point of mapping, otherwise use parameter value from properties
-                gp_Pnt p_in;
-                if (shapes.size() >= 2) {
-                    TopoDS_Vertex vertex = TopoDS::Vertex(*(shapes[1]));
-                    if (vertex.IsNull())
-                        throw Base::ValueError("Null vertex in AttachEngine3D::calculateAttachedPlacement()!");
-                    p_in = BRep_Tool::Pnt(vertex);
-
-                    // FIXME: need to iterate through the curves of the Wire here instead
-                    // Handle (Geom_Curve) hCurve = BRep_Tool::Curve(path, u1, u2);
-
-                    // GeomAPI_ProjectPointOnCurve projector (p_in, hCurve);
-                    // u = projector.LowerDistanceParameter();
+                gp_Vec T,N,B;//Frenet?Serret axes: tangent, normal, binormal
+                T = d.Normalized();
+                N = dd.Subtracted(T.Multiplied(dd.Dot(T)));//take away the portion of dd that is along tangent
+                if (N.Magnitude() > Precision::SquareConfusion()) {
+                    N.Normalize();
+                    B = T.Crossed(N);
                 } else {
-                    u = u1  +  this->attachParameter * (u2 - u1);
-                }
-                gp_Pnt p;  gp_Vec d; //point and derivative
-                adapt.D1(u,p,d);
-
-                if (d.Magnitude()<Precision::Confusion())
-                    throw Base::ValueError("AttachEngine3D::calculateAttachedPlacement: path curve derivative is below 1e-7, too low, can't align");
-
-                //Set origin. Note that it will be overridden later for mmConcentric and mmRevolutionSection
-                if (bThruVertex) {
-                    SketchBasePoint = p_in;
-                } else {
-                    SketchBasePoint = p;
+                    Base::Console().Warning("AttachEngine3D::calculateAttachedPlacement: path curve second derivative is below 1e-14, can't align x axis.\n");
+                    N = gp_Vec(0.,0.,0.);
+                    B = gp_Vec(0.,0.,0.);//redundant, just for consistency
                 }
 
-                if (mmode == mmRevolutionSection
-                        || mmode == mmConcentric
-                        || mmode == mmFrenetNB
-                        || mmode == mmFrenetTN
-                        || mmode == mmFrenetTB){
-                    gp_Vec dd;//second derivative
-                    try{
-                        adapt.D2(u,p,d,dd);
-                    } catch (Standard_Failure &e){
-                        //ignore. This is brobably due to insufficient continuity.
-                        dd = gp_Vec(0., 0., 0.);
-                        Base::Console().Warning("AttachEngine3D::calculateAttachedPlacement: can't calculate second derivative of curve. OCC error: %s\n", e.GetMessageString());
-                    }
-
-                    gp_Vec T,N,B;//Frenet?Serret axes: tangent, normal, binormal
-                    T = d.Normalized();
-                    N = dd.Subtracted(T.Multiplied(dd.Dot(T)));//take away the portion of dd that is along tangent
-                    if (N.Magnitude() > Precision::SquareConfusion()) {
-                        N.Normalize();
-                        B = T.Crossed(N);
-                    } else {
-                        Base::Console().Warning("AttachEngine3D::calculateAttachedPlacement: path curve second derivative is below 1e-14, can't align x axis.\n");
-                        N = gp_Vec(0.,0.,0.);
-                        B = gp_Vec(0.,0.,0.);//redundant, just for consistency
-                    }
-
-                    switch (mmode){
-                        case mmFrenetNB:
-                        case mmRevolutionSection:
-                            SketchNormal = T.Reversed();//to avoid sketches upside-down for regular curves like circles
-                            SketchXAxis = N.Reversed();
-                            break;
-                        case mmFrenetTN:
-                        case mmConcentric:
-                            if (N.Magnitude() == 0.0)
-                                throw Base::ValueError("AttachEngine3D::calculateAttachedPlacement: Frenet-Serret normal is undefined. Can't align to TN plane.");
-                            SketchNormal = B;
-                            SketchXAxis = T;
-                            break;
-                        case mmFrenetTB:
-                            if (N.Magnitude() == 0.0)
-                                throw Base::ValueError("AttachEngine3D::calculateAttachedPlacement: Frenet-Serret normal is undefined. Can't align to TB plane.");
-                            SketchNormal = N.Reversed();//it is more convenient to sketch on something looking at it so it is convex.
-                            SketchXAxis = T;
-                            break;
-                        default:
-                            assert(0);//mode forgotten?
-                    }
-                    if (mmode == mmRevolutionSection || mmode == mmConcentric) {
-                        //make sketch origin be at center of osculating circle
+                switch (mmode){
+                    case mmFrenetNB:
+                    case mmRevolutionSection:
+                        SketchNormal = T.Reversed();//to avoid sketches upside-down for regular curves like circles
+                        SketchXAxis = N.Reversed();
+                        break;
+                    case mmFrenetTN:
+                    case mmConcentric:
                         if (N.Magnitude() == 0.0)
-                            throw Base::ValueError("AttachEngine3D::calculateAttachedPlacement: path has infinite radius of curvature at the point. Can't align for revolving.");
-                        double curvature = dd.Dot(N) / pow(d.Magnitude(), 2);
-                        gp_Vec pv (p.XYZ());
-                        pv.Add(N.Multiplied(1/curvature));//shift the point along curvature by radius of curvature
-                        SketchBasePoint = gp_Pnt(pv.XYZ());
-                        //it would have been cool to have the curve attachment point available inside sketch... Leave for future.
-                    }
-                } else if (mmode == mmNormalToPath){//mmNormalToPath
-                    //align sketch origin to the origin of support
-                    SketchNormal = gp_Dir(d.Reversed());//sketch normal looks at user. It is natural to have the curve directed away from user, so reversed.
+                            throw Base::ValueError("AttachEngine3D::calculateAttachedPlacement: Frenet-Serret normal is undefined. Can't align to TN plane.");
+                        SketchNormal = B;
+                        SketchXAxis = T;
+                        break;
+                    case mmFrenetTB:
+                        if (N.Magnitude() == 0.0)
+                            throw Base::ValueError("AttachEngine3D::calculateAttachedPlacement: Frenet-Serret normal is undefined. Can't align to TB plane.");
+                        SketchNormal = N.Reversed();//it is more convenient to sketch on something looking at it so it is convex.
+                        SketchXAxis = T;
+                        break;
+                    default:
+                        assert(0);//mode forgotten?
                 }
+                if (mmode == mmRevolutionSection || mmode == mmConcentric) {
+                    //make sketch origin be at center of osculating circle
+                    if (N.Magnitude() == 0.0)
+                        throw Base::ValueError("AttachEngine3D::calculateAttachedPlacement: path has infinite radius of curvature at the point. Can't align for revolving.");
+                    double curvature = dd.Dot(N) / pow(d.Magnitude(), 2);
+                    gp_Vec pv (p.XYZ());
+                    pv.Add(N.Multiplied(1/curvature));//shift the point along curvature by radius of curvature
+                    SketchBasePoint = gp_Pnt(pv.XYZ());
+                    //it would have been cool to have the curve attachment point available inside sketch... Leave for future.
+                }
+            } else if (mmode == mmNormalToPath){//mmNormalToPath
+                //align sketch origin to the origin of support
+                SketchNormal = gp_Dir(d.Reversed());//sketch normal looks at user. It is natural to have the curve directed away from user, so reversed.
             }
         }
     } break;
