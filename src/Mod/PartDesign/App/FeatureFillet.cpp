@@ -1,4 +1,4 @@
-/***************************************************************************
+﻿/***************************************************************************
  *   Copyright (c) 2008 Werner Mayer <wmayer[at]users.sourceforge.net>     *
  *                                                                         *
  *   This file is part of the FreeCAD CAx development system.              *
@@ -98,9 +98,28 @@ App::DocumentObjectExecReturn *Fillet::execute(void)
         }
 
         mkFillet.Build();
-        if (!mkFillet.IsDone())
-            return new App::DocumentObjectExecReturn("Failed to create fillet");
+        if (!mkFillet.IsDone()) {
+            auto nFaultyContours = mkFillet.NbFaultyContours();
+            Base::Console().Message("Failed to create fillet (%d faulty contours)\n", nFaultyContours);
+            for (auto i = 0; i < nFaultyContours; i++) {
+                Base::Console().Message("%d, ", mkFillet.FaultyContour(i));
 
+                int j = 0;
+                for (std::vector<std::string>::const_iterator it = SubNames.begin(); it != SubNames.end(); ++it) {
+                    TopoDS_Edge edge = TopoDS::Edge(baseShape.getSubShape(it->c_str()));
+
+                    if (j == i)
+                    {
+                        Base::Console().Message("failed contour = %s\n", it->c_str());
+                        //Selection
+                    }
+                    j++;
+                }
+
+            }
+
+            return new App::DocumentObjectExecReturn("Failed to create fillet");
+        }
         TopoDS_Shape shape = mkFillet.Shape();
         if (shape.IsNull())
             return new App::DocumentObjectExecReturn("Resulting shape is null");
