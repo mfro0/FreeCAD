@@ -1232,7 +1232,6 @@ Base::Placement AttachEngine3D::calculateAttachedPlacement(const Base::Placement
 
         if (shapes[0]->ShapeType() != TopAbs_WIRE) {
 
-            Base::Console().Warning("ShapeType() = %d\n", shapes[0]->ShapeType());
             const TopoDS_Edge &path = TopoDS::Edge(*(shapes[0]));
             if (path.IsNull())
                 throw Base::ValueError("Null path in AttachEngine3D::calculateAttachedPlacement()!");
@@ -1345,7 +1344,7 @@ Base::Placement AttachEngine3D::calculateAttachedPlacement(const Base::Placement
             if (path.IsNull())
                 throw Base::ValueError("Null path in AttachEngine3D::calculateAttachedPlacement()!");
 
-            BRepAdaptor_CompCurve adapt(path);
+            BRepAdaptor_CompCurve adapt(path, true);
 
             double u = 0.0;
             double u1 = adapt.FirstParameter();
