@@ -1,4 +1,4 @@
-/***************************************************************************
+﻿/***************************************************************************
  *   Copyright (c) 2015 Victor Titov (DeepSOIC) <vv.titov@gmail.com>       *
  *                                                                         *
  *   This file is part of the FreeCAD CAx development system.              *
@@ -24,9 +24,12 @@
 #ifndef _PreComp_
 # include <BRep_Tool.hxx>
 # include <BRepAdaptor_Curve.hxx>
+# include <BRepAdaptor_CompCurve.hxx>
+# include <BRepBuilderAPI_MakeFace.hxx>
 # include <BRepAdaptor_Surface.hxx>
 # include <BRepBuilderAPI_MakeEdge.hxx>
 # include <BRepBuilderAPI_MakeFace.hxx>
+# include <BRepTools_WireExplorer.hxx>
 # include <BRepExtrema_DistShapeShape.hxx>
 # include <BRepGProp.hxx>
 # include <BRepIntCurveSurface_Inter.hxx>
@@ -896,6 +899,9 @@ AttachEngine3D::AttachEngine3D()
 
     //---------Edge-driven
 
+    s=cat(rtWire);
+    modeRefTypes[mmNormalToPath].push_back(s);
+
     s=cat(rtEdge);
     modeRefTypes[mmNormalToPath].push_back(s);
 
@@ -914,6 +920,10 @@ AttachEngine3D::AttachEngine3D()
     s=cat(rtEdge, rtVertex);
     modeRefTypes[mmNormalToPath].push_back(s);
     s=cat(rtVertex, rtEdge);
+    modeRefTypes[mmNormalToPath].push_back(s);
+    s = cat(rtWire, rtVertex);
+    modeRefTypes[mmNormalToPath].push_back(s);
+    s = cat(rtWire, rtVertex);
     modeRefTypes[mmNormalToPath].push_back(s);
 
     s=cat(rtCurve, rtVertex);
@@ -981,7 +991,7 @@ Base::Placement AttachEngine3D::calculateAttachedPlacement(const Base::Placement
 {
     const eMapMode mmode = this->mapMode;
     if (mmode == mmDeactivated)
-        throw ExceptionCancel();//to be handled in positionBySupport, to not do anything if disabled
+        throw ExceptionCancel();//to be handled in positionBySupport, do not do anything if disabled
     std::vector<App::GeoFeature*> parts;
     std::vector<const TopoDS_Shape*> shapes;
     std::vector<TopoDS_Shape> copiedShapeStorage;
@@ -1231,39 +1241,132 @@ Base::Placement AttachEngine3D::calculateAttachedPlacement(const Base::Placement
             bThruVertex = true;
         }
 
-        const TopoDS_Edge &path = TopoDS::Edge(*(shapes[0]));
-        if (path.IsNull())
-            throw Base::ValueError("Null path in AttachEngine3D::calculateAttachedPlacement()!");
-
-        BRepAdaptor_Curve adapt(path);
-
-        double u = 0.0;
-        double u1 = adapt.FirstParameter();
-        double u2 = adapt.LastParameter();
-        if(Precision::IsInfinite(u1) || Precision::IsInfinite(u2)){
-            //prevent attachment to infinities in case of infinite shape.
-            //example of an infinite shape is a datum line.
-            u1 = 0.0;
-            u2 = 1.0;
-        }
 
         //if a point is specified, use the point as a point of mapping, otherwise use parameter value from properties
         gp_Pnt p_in;
+        bool have_point = false;
+
         if (shapes.size() >= 2) {
             TopoDS_Vertex vertex = TopoDS::Vertex(*(shapes[1]));
             if (vertex.IsNull())
                 throw Base::ValueError("Null vertex in AttachEngine3D::calculateAttachedPlacement()!");
             p_in = BRep_Tool::Pnt(vertex);
-
-            Handle (Geom_Curve) hCurve = BRep_Tool::Curve(path, u1, u2);
-
-            GeomAPI_ProjectPointOnCurve projector (p_in, hCurve);
-            u = projector.LowerDistanceParameter();
-        } else {
-            u = u1  +  this->attachParameter * (u2 - u1);
+            have_point = true;
         }
+
+
         gp_Pnt p;  gp_Vec d; //point and derivative
-        adapt.D1(u,p,d);
+
+        const TopoDS_Shape path = *(shapes[0]);
+        bool isCompound = shapes[0]->ShapeType() == TopAbs_WIRE;
+        double u = 0.0, u1, u2;
+        if (isCompound) {
+            const TopoDS_Wire &path = TopoDS::Wire(*(shapes[0]));
+            if (path.IsNull())
+                throw Base::ValueError("Null path in AttachEngine3D::calculateAttachedPlacement()!");
+
+            const BRepAdaptor_CompCurve adapt = BRepAdaptor_CompCurve(TopoDS::Wire(*(shapes[0])), true);
+            u1 = adapt.FirstParameter();
+            u2 = adapt.LastParameter();
+
+            if (have_point)
+            {
+                BRepTools_WireExplorer we = BRepTools_WireExplorer(path);
+                int segment = 0;
+
+                double min_dist = DBL_MAX;
+                int min_dist_seg = 0;
+                double min_u;
+                double lu1, lu2;
+
+                // find the subcurve that is closest to the given point
+                for (; we.More(); we.Next(), segment++)
+                {
+                    u = DBL_MAX;
+
+                    const BRepAdaptor_Curve sa = BRepAdaptor_Curve(we.Current());
+                    lu1 = sa.FirstParameter();
+                    lu2 = sa.LastParameter();
+
+                    Handle (Geom_Curve) hCurve = BRep_Tool::Curve(we.Current(), lu1, lu2);
+
+                    GeomAPI_ProjectPointOnCurve projector (p_in, hCurve);
+                    min_u = projector.LowerDistanceParameter();
+
+                    if (projector.NbPoints()) // do we have a projection at all?
+                    {
+                        for (int i = 1; i <= projector.NbPoints(); i++)
+                        {
+                            double dist = projector.Distance(i);
+                            if (dist < min_dist)
+                            {
+                                u = min_u;
+
+                                // need to convert u (parameter on curve in wire) into a parameter on the wire
+                                // FIXME: how is that done?
+                                min_dist = dist;
+                                min_dist_seg = segment;
+                                Base::Console().Message("new min distance=%lf in segment %d\n", min_dist, segment);
+                            }
+                        }
+                    } else
+                    {
+                        Base::Console().Message("no projection found for segment %d\n", segment);
+                    }
+                }
+
+                // we now have the parameter on the subcurve and know all the previous curves that lead
+                // there. Need to iterate through the curves once more to find the corresponding parameter on the wire
+                we.Init(path);
+                double param = 0.0;
+
+                for (segment = 0; we.More(); we.Next(), segment++) {
+                    Handle (Geom_Curve) hCurve = BRep_Tool::Curve(we.Current(), lu1, lu2);
+                    GeomAPI_ProjectPointOnCurve projector (p_in, hCurve);
+
+                    param += lu2;
+
+                    if (segment == min_dist_seg)
+                        break;
+                }
+                Base::Console().Message("Segment=%d, param=%lf\n", segment, param);
+            } else {
+                u = u1  +  this->attachParameter * (u2 - u1);
+            }
+            if(Precision::IsInfinite(u1) || Precision::IsInfinite(u2)){
+                //prevent attachment to infinities in case of infinite shape.
+                //example of an infinite shape is a datum line.
+                u1 = 0.0;
+                u2 = 1.0;
+            }
+            adapt.D1(u,p,d);
+        } else {
+            const TopoDS_Edge &path = TopoDS::Edge(*(shapes[0]));
+            if (path.IsNull())
+                throw Base::ValueError("Null path in AttachEngine3D::calculateAttachedPlacement()!");
+
+            const BRepAdaptor_Curve adapt = BRepAdaptor_Curve(TopoDS::Edge(*(shapes[0])));
+            u1 = adapt.FirstParameter();
+            u2 = adapt.LastParameter();
+
+            if (have_point)
+            {
+                Handle (Geom_Curve) hCurve = BRep_Tool::Curve(path, u1, u2);
+
+                GeomAPI_ProjectPointOnCurve projector (p_in, hCurve);
+                u = projector.LowerDistanceParameter();
+            } else {
+                u = u1  +  this->attachParameter * (u2 - u1);
+            }
+            if(Precision::IsInfinite(u1) || Precision::IsInfinite(u2)){
+                //prevent attachment to infinities in case of infinite shape.
+                //example of an infinite shape is a datum line.
+                u1 = 0.0;
+                u2 = 1.0;
+            }
+            adapt.D1(u,p,d);
+        }
+
 
         if (d.Magnitude()<Precision::Confusion())
             throw Base::ValueError("AttachEngine3D::calculateAttachedPlacement: path curve derivative is below 1e-7, too low, can't align");
@@ -1282,9 +1385,9 @@ Base::Placement AttachEngine3D::calculateAttachedPlacement(const Base::Placement
                 || mmode == mmFrenetTB){
             gp_Vec dd;//second derivative
             try{
-                adapt.D2(u,p,d,dd);
+//                adapt.D2(u,p,d,dd);
             } catch (Standard_Failure &e){
-                //ignore. This is brobably due to insufficient continuity.
+                //ignore. This is probably due to insufficient continuity.
                 dd = gp_Vec(0., 0., 0.);
                 Base::Console().Warning("AttachEngine3D::calculateAttachedPlacement: can't calculate second derivative of curve. OCC error: %s\n", e.GetMessageString());
             }
@@ -1301,28 +1404,27 @@ Base::Placement AttachEngine3D::calculateAttachedPlacement(const Base::Placement
                 B = gp_Vec(0.,0.,0.);//redundant, just for consistency
             }
 
-
             switch (mmode){
-            case mmFrenetNB:
-            case mmRevolutionSection:
-                SketchNormal = T.Reversed();//to avoid sketches upside-down for regular curves like circles
-                SketchXAxis = N.Reversed();
-                break;
-            case mmFrenetTN:
-            case mmConcentric:
-                if (N.Magnitude() == 0.0)
-                    throw Base::ValueError("AttachEngine3D::calculateAttachedPlacement: Frenet-Serret normal is undefined. Can't align to TN plane.");
-                SketchNormal = B;
-                SketchXAxis = T;
-                break;
-            case mmFrenetTB:
-                if (N.Magnitude() == 0.0)
-                    throw Base::ValueError("AttachEngine3D::calculateAttachedPlacement: Frenet-Serret normal is undefined. Can't align to TB plane.");
-                SketchNormal = N.Reversed();//it is more convenient to sketch on something looking at it so it is convex.
-                SketchXAxis = T;
-                break;
-            default:
-                assert(0);//mode forgotten?
+                case mmFrenetNB:
+                case mmRevolutionSection:
+                    SketchNormal = T.Reversed();//to avoid sketches upside-down for regular curves like circles
+                    SketchXAxis = N.Reversed();
+                    break;
+                case mmFrenetTN:
+                case mmConcentric:
+                    if (N.Magnitude() == 0.0)
+                        throw Base::ValueError("AttachEngine3D::calculateAttachedPlacement: Frenet-Serret normal is undefined. Can't align to TN plane.");
+                    SketchNormal = B;
+                    SketchXAxis = T;
+                    break;
+                case mmFrenetTB:
+                    if (N.Magnitude() == 0.0)
+                        throw Base::ValueError("AttachEngine3D::calculateAttachedPlacement: Frenet-Serret normal is undefined. Can't align to TB plane.");
+                    SketchNormal = N.Reversed();//it is more convenient to sketch on something looking at it so it is convex.
+                    SketchXAxis = T;
+                    break;
+                default:
+                    assert(0);//mode forgotten?
             }
             if (mmode == mmRevolutionSection || mmode == mmConcentric) {
                 //make sketch origin be at center of osculating circle
@@ -1338,8 +1440,8 @@ Base::Placement AttachEngine3D::calculateAttachedPlacement(const Base::Placement
             //align sketch origin to the origin of support
             SketchNormal = gp_Dir(d.Reversed());//sketch normal looks at user. It is natural to have the curve directed away from user, so reversed.
         }
-
     } break;
+
     case mmThreePointsPlane:
     case mmThreePointsNormal: {
 
@@ -1456,7 +1558,7 @@ Base::Placement AttachEngine3D::calculateAttachedPlacement(const Base::Placement
             signs[0] = -1.0;
             signs[1] = -1.0;
         } else {
-            throw Base::ValueError("AttachEngine3D::calculateAttachedPlacement: Folding - edges to not share a vertex.");
+            throw Base::ValueError("AttachEngine3D::calculateAttachedPlacement: Folding - edges do not share a vertex.");
         }
         for (int i = 2  ;  i<4  ;  i++){
             p1 = adapts[i].Value(adapts[i].FirstParameter());
@@ -1466,7 +1568,7 @@ Base::Placement AttachEngine3D::calculateAttachedPlacement(const Base::Placement
             else if (p.Distance(p2) < Precision::Confusion())
                 signs[i] = -1.0;
             else
-                throw Base::ValueError("AttachEngine3D::calculateAttachedPlacement: Folding - edges to not share a vertex.");
+                throw Base::ValueError("AttachEngine3D::calculateAttachedPlacement: Folding - edges do not share a vertex.");
         }
 
         gp_Vec dirs[4];
@@ -1713,7 +1815,7 @@ Base::Placement AttachEngineLine::calculateAttachedPlacement(const Base::Placeme
     Base::Placement presuperPlacement;
     switch(mmode){
     case mmDeactivated:
-        throw ExceptionCancel();//to be handled in positionBySupport, to not do anything if disabled
+        throw ExceptionCancel();//to be handled in positionBySupport, do not do anything if disabled
     case mm1AxisX:
         mmode = mmObjectYZ;
         break;
@@ -1981,7 +2083,7 @@ Base::Placement AttachEnginePoint::calculateAttachedPlacement(const Base::Placem
     bool bReUsed = true;
     switch(mmode){
     case mmDeactivated:
-        throw ExceptionCancel();//to be handled in positionBySupport, to not do anything if disabled
+        throw ExceptionCancel();//to be handled in positionBySupport, do not do anything if disabled
     case mm0Origin:
         mmode = mmObjectXY;
         break;
