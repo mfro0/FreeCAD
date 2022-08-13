@@ -1235,63 +1235,72 @@ Base::Placement AttachEngine3D::calculateAttachedPlacement(const Base::Placement
         if (shapes.empty())
             throw Base::ValueError("AttachEngine3D::calculateAttachedPlacement: no subshapes specified (need one edge, and an optional vertex).");
 
-        bool bThruVertex = false;
+        auto bThruVertex = false;
         if (shapes[0]->ShapeType() == TopAbs_VERTEX && shapes.size()>=2) {
             std::swap(shapes[0],shapes[1]);
             bThruVertex = true;
         }
 
 
-        //if a point is specified, use the point as a point of mapping, otherwise use parameter value from properties
+        // if a point is specified, use the point as a point of mapping, otherwise use parameter value from properties
         gp_Pnt p_in;
-        bool have_point = false;
+        auto bHavePoint = false;
 
         if (shapes.size() >= 2) {
-            TopoDS_Vertex vertex = TopoDS::Vertex(*(shapes[1]));
+            const TopoDS_Vertex vertex = TopoDS::Vertex(*(shapes[1]));
             if (vertex.IsNull())
                 throw Base::ValueError("Null vertex in AttachEngine3D::calculateAttachedPlacement()!");
             p_in = BRep_Tool::Pnt(vertex);
-            have_point = true;
+            bHavePoint = true;
         }
 
 
         gp_Pnt p;  gp_Vec d; //point and derivative
 
-        const TopoDS_Shape path = *(shapes[0]);
-        bool isCompound = shapes[0]->ShapeType() == TopAbs_WIRE;
+        const TopoDS_Shape& path = *(shapes[0]);
+        bool bIsCompound = path.ShapeType() == TopAbs_WIRE;
         double u = 0.0, u1, u2;
-        if (isCompound) {
-            const TopoDS_Wire &path = TopoDS::Wire(*(shapes[0]));
-            if (path.IsNull())
-                throw Base::ValueError("Null path in AttachEngine3D::calculateAttachedPlacement()!");
 
-            const BRepAdaptor_CompCurve adapt = BRepAdaptor_CompCurve(TopoDS::Wire(*(shapes[0])), true);
+        if (path.IsNull())
+            throw Base::ValueError("Null path in AttachEngine3D::calculateAttachedPlacement()!");
+        
+        if (bIsCompound) {      // we have a Wire
+            const TopoDS_Wire& wPath = static_cast<const TopoDS_Wire&>(path);
+
+            const BRepAdaptor_CompCurve adapt = BRepAdaptor_CompCurve(wPath, true);  // second parameter ensures linear parameter flow
+            
             u1 = adapt.FirstParameter();
             u2 = adapt.LastParameter();
+            Base::Console().Message("wire parameter %lf to %lf\n", u1, u2);
 
-            if (have_point)
+            if (bHavePoint)
             {
-                BRepTools_WireExplorer we = BRepTools_WireExplorer(path);
+                BRepTools_WireExplorer we = BRepTools_WireExplorer(wPath);
+                std::vector<std::pair<double, double>> edge_params;
                 int segment = 0;
 
+                const BRepAdaptor_CompCurve a = BRepAdaptor_CompCurve(wPath);
+                Base::Console().Message("wire start: %lf, end: %lf\n", a.FirstParameter(), a.LastParameter());
+                Base::Console().Message("curve resolution: %lf\n", a.Resolution(100.));
+                                       
                 double min_dist = DBL_MAX;
                 int min_dist_seg = 0;
-                double min_u;
-                double lu1, lu2;
-
+                double min_u = 0.0;
+                
                 // find the subcurve that is closest to the given point
                 for (; we.More(); we.Next(), segment++)
                 {
-                    u = DBL_MAX;
+                    std::pair<double, double> lu;
 
                     const BRepAdaptor_Curve sa = BRepAdaptor_Curve(we.Current());
-                    lu1 = sa.FirstParameter();
-                    lu2 = sa.LastParameter();
+                    lu.first = sa.FirstParameter();
+                    lu.second = sa.LastParameter();
+                    edge_params.push_back(lu);
+                    Base::Console().Message("start: %lf, end: %lf\n", lu.first, lu.second);
 
-                    Handle (Geom_Curve) hCurve = BRep_Tool::Curve(we.Current(), lu1, lu2);
+                    Handle (Geom_Curve) hCurve = BRep_Tool::Curve(we.Current(), lu.first, lu.second);
 
                     GeomAPI_ProjectPointOnCurve projector (p_in, hCurve);
-                    min_u = projector.LowerDistanceParameter();
 
                     if (projector.NbPoints()) // do we have a projection at all?
                     {
@@ -1300,13 +1309,11 @@ Base::Placement AttachEngine3D::calculateAttachedPlacement(const Base::Placement
                             double dist = projector.Distance(i);
                             if (dist < min_dist)
                             {
-                                u = min_u;
-
-                                // need to convert u (parameter on curve in wire) into a parameter on the wire
-                                // FIXME: how is that done?
                                 min_dist = dist;
                                 min_dist_seg = segment;
-                                Base::Console().Message("new min distance=%lf in segment %d\n", min_dist, segment);
+                                min_u = projector.LowerDistanceParameter();
+                                Base::Console().Message("new min distance=%lf in segment %d at parameter %lf\n",
+                                                        min_dist, segment, min_u);
                             }
                         }
                     } else
@@ -1316,20 +1323,20 @@ Base::Placement AttachEngine3D::calculateAttachedPlacement(const Base::Placement
                 }
 
                 // we now have the parameter on the subcurve and know all the previous curves that lead
-                // there. Need to iterate through the curves once more to find the corresponding parameter on the wire
-                we.Init(path);
+                // there.
+                
                 double param = 0.0;
+                segment = 0;
 
-                for (segment = 0; we.More(); we.Next(), segment++) {
-                    Handle (Geom_Curve) hCurve = BRep_Tool::Curve(we.Current(), lu1, lu2);
-                    GeomAPI_ProjectPointOnCurve projector (p_in, hCurve);
+                for (auto e : edge_params) {
+                    param += e.second - e.first;
 
-                    param += lu2;
-
-                    if (segment == min_dist_seg)
+                    if (segment++ == min_dist_seg)
                         break;
                 }
-                Base::Console().Message("Segment=%d, param=%lf\n", segment, param);
+                
+                Base::Console().Message("Segment=%d, param=%lf\n", segment - 1, param);
+                u = param + (edge_params[segment].second - edge_params[segment].first) + min_u;
             } else {
                 u = u1  +  this->attachParameter * (u2 - u1);
             }
@@ -1341,17 +1348,17 @@ Base::Placement AttachEngine3D::calculateAttachedPlacement(const Base::Placement
             }
             adapt.D1(u,p,d);
         } else {
-            const TopoDS_Edge &path = TopoDS::Edge(*(shapes[0]));
-            if (path.IsNull())
+            const TopoDS_Edge &ePath = static_cast<const TopoDS_Edge&>(path);
+            if (ePath.IsNull())
                 throw Base::ValueError("Null path in AttachEngine3D::calculateAttachedPlacement()!");
 
             const BRepAdaptor_Curve adapt = BRepAdaptor_Curve(TopoDS::Edge(*(shapes[0])));
             u1 = adapt.FirstParameter();
             u2 = adapt.LastParameter();
 
-            if (have_point)
+            if (bHavePoint)
             {
-                Handle (Geom_Curve) hCurve = BRep_Tool::Curve(path, u1, u2);
+                Handle (Geom_Curve) hCurve = BRep_Tool::Curve(ePath, u1, u2);
 
                 GeomAPI_ProjectPointOnCurve projector (p_in, hCurve);
                 u = projector.LowerDistanceParameter();
