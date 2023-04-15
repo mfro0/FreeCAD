@@ -1268,10 +1268,10 @@ Base::Placement AttachEngine3D::calculateAttachedPlacement(const Base::Placement
             const TopoDS_Wire& wPath = static_cast<const TopoDS_Wire&>(path);
 
             const BRepAdaptor_CompCurve adapt = BRepAdaptor_CompCurve(wPath, true);  // second parameter ensures linear parameter flow
-            
+            Base::Console().Message("linear adaptor resolution: %lf\n", adapt.Resolution(100.));
             u1 = adapt.FirstParameter();
             u2 = adapt.LastParameter();
-            Base::Console().Message("wire parameter %lf to %lf\n", u1, u2);
+            Base::Console().Message("wire parameter %lf to %lf, length =%lf\n", u1, u2, u2 - u1);
 
             if (bHavePoint)
             {
@@ -1279,8 +1279,10 @@ Base::Placement AttachEngine3D::calculateAttachedPlacement(const Base::Placement
                 std::vector<std::pair<double, double>> edge_params;
                 int segment = 0;
 
+                // non-linear adaptor
                 const BRepAdaptor_CompCurve a = BRepAdaptor_CompCurve(wPath);
-                Base::Console().Message("wire start: %lf, end: %lf\n", a.FirstParameter(), a.LastParameter());
+                Base::Console().Message("wire start: %lf, end: %lf, length=%lf\n",
+                                        a.FirstParameter(), a.LastParameter(), a.LastParameter() - a.FirstParameter());
                 Base::Console().Message("curve resolution: %lf\n", a.Resolution(100.));
                                        
                 double min_dist = DBL_MAX;
@@ -1296,7 +1298,8 @@ Base::Placement AttachEngine3D::calculateAttachedPlacement(const Base::Placement
                     lu.first = sa.FirstParameter();
                     lu.second = sa.LastParameter();
                     edge_params.push_back(lu);
-                    Base::Console().Message("start: %lf, end: %lf\n", lu.first, lu.second);
+                    Base::Console().Message("segment %d: start: %lf, end: %lf, length=%lf\n", segment,
+                                            lu.first, lu.second, lu.second - lu.first);
 
                     Handle (Geom_Curve) hCurve = BRep_Tool::Curve(we.Current(), lu.first, lu.second);
 
